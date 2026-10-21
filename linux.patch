@@ -1764,7 +1764,7 @@ index 0442bfcfd384..d9634611eed5 100644
  	vcn_v2_0_enable_static_power_gating(vinst);
  
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 941c1a312824..5ea5014cf5d1 100644
+index 941c1a3..5ea5014 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -80,6 +80,10 @@
@@ -6276,10 +6276,10 @@ index 000000000000..c6c64e3cc9ed
 +MODULE_ALIAS("platform:ps5-fan");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100644
-index 000000000000..67871f238abe
+index 0000000..2ee166b
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1239 @@
+@@ -0,0 +1,1249 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -7471,6 +7471,16 @@ index 000000000000..67871f238abe
 +	return 0;
 +}
 +EXPORT_SYMBOL(getHdmiConfiguration);
++
++/* FLAVA3 audio is choppy with the default Naud, Maud is too coarse. */
++u32 getHdmiDpAudioN(u32 default_n)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3)
++		return 0x80000;
++
++	return default_n;
++}
++EXPORT_SYMBOL(getHdmiDpAudioN);
 +
 +bool isHdmiModeValid(const struct drm_display_mode *mode, int force_1080p)
 +{
@@ -10846,10 +10856,10 @@ index fbb62f7c3111..18edd8279773 100644
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
 new file mode 100644
-index 000000000000..75a2d6dace5d
+index 0000000..322b2a6
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,98 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -10912,6 +10922,7 @@ index 000000000000..75a2d6dace5d
 +void sceHdmiSetAudioMute(int mute);
 +void sceHdmiOutputMode(void);
 +int getHdmiConfiguration(void);
++u32 getHdmiDpAudioN(u32 default_n);
 +bool isHdmiModeValid(const struct drm_display_mode *mode, int force_1080p);
 +
 +int icc_nvs_write(u32 partition, u16 offset, u16 length, const void *data);
@@ -11010,3 +11021,37 @@ index 28c55c5a2d2e..fad1ace78769 100644
  	{ PCI_VDEVICE(ATI, 0x157a),
  	  .driver_data = AZX_DRIVER_ATIHDMI_NS | AZX_DCAPS_PRESET_ATI_HDMI_NS },
  	{ PCI_VDEVICE(ATI, 0x15b3),
+diff --git a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c
+index d913f06..501f97a 100644
+--- a/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c
++++ b/drivers/gpu/drm/amd/display/dc/dio/dcn10/dcn10_stream_encoder.c
+@@ -32,6 +32,10 @@
+ #include "dpcd_defs.h"
+ #include "dcn30/dcn30_afmt.h"
+ 
++#ifdef CONFIG_X86_PS5
++#include <linux/ps5.h>
++#endif
++
+ #define DC_LOGGER \
+ 		enc1->base.ctx->logger
+ 
+@@ -1333,12 +1337,17 @@ static void enc1_se_setup_dp_audio(
+ 	struct stream_encoder *enc)
+ {
+ 	struct dcn10_stream_encoder *enc1 = DCN10STRENC_FROM_STRENC(enc);
++	uint32_t aud_n = DP_SEC_AUD_N__DP_SEC_AUD_N__DEFAULT;
++
++#ifdef CONFIG_X86_PS5
++	aud_n = getHdmiDpAudioN(aud_n);
++#endif
+ 
+ 	/* --- DP Audio packet configurations --- */
+ 
+ 	/* ATP Configuration */
+ 	REG_SET(DP_SEC_AUD_N, 0,
+-			DP_SEC_AUD_N, DP_SEC_AUD_N__DP_SEC_AUD_N__DEFAULT);
++			DP_SEC_AUD_N, aud_n);
+ 
+ 	/* Async/auto-calc timestamp mode */
+ 	REG_SET(DP_SEC_TIMESTAMP, 0, DP_SEC_TIMESTAMP_MODE,
