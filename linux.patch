@@ -1764,7 +1764,7 @@ index 0442bfcfd384..d9634611eed5 100644
  	vcn_v2_0_enable_static_power_gating(vinst);
  
 diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
-index 941c1a3..d2ed38c 100644
+index 941c1a3..7c5bd50 100644
 --- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 +++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
 @@ -80,6 +80,10 @@
@@ -1836,8 +1836,50 @@ index 941c1a3..d2ed38c 100644
  
  	amdgpu_dm_irq_fini(adev);
  	amdgpu_dm_fini(adev);
-@@ -7089,6 +7121,12 @@ static void fill_stream_properties_from_drm_display_mode(
+@@ -6963,6 +6995,35 @@ static bool adjust_colour_depth_from_display_info(
+ 	return false;
+ }
  
++#ifdef CONFIG_X86_PS5
++static void dm_ps5_set_hdr_timing(struct dc_crtc_timing *timing,
++				  const struct drm_display_mode *mode,
++				  const struct drm_connector_state *state)
++{
++	const struct drm_display_info *info = &state->connector->display_info;
++	struct hdmi_drm_infoframe frame;
++	u8 vic = drm_match_cea_mode(mode);
++
++	if (!isHdmiHdrSupported() || !state->hdr_output_metadata ||
++	    !(info->color_formats & BIT(DRM_OUTPUT_COLOR_FORMAT_YCBCR422)) ||
++	    timing->pixel_encoding != PIXEL_ENCODING_RGB ||
++	    timing->display_color_depth < COLOR_DEPTH_121212)
++		return;
++	if (state->colorspace != DRM_MODE_COLORIMETRY_BT2020_RGB &&
++	    state->colorspace != DRM_MODE_COLORIMETRY_BT2020_YCC)
++		return;
++	if (vic != 16 && vic != 97) /* 1080p60, 2160p60 */
++		return;
++	if (drm_hdmi_infoframe_set_hdr_metadata(&frame, state) ||
++	    frame.eotf != HDMI_EOTF_SMPTE_ST2084)
++		return;
++
++	/* 12 bpc YCbCr422 uses the same TMDS clock as 8 bpc RGB. */
++	timing->pixel_encoding = PIXEL_ENCODING_YCBCR422;
++	timing->display_color_depth = COLOR_DEPTH_121212;
++}
++#endif
++
+ static void fill_stream_properties_from_drm_display_mode(
+ 	struct dc_stream_state *stream,
+ 	const struct drm_display_mode *mode_in,
+@@ -7087,8 +7148,18 @@ static void fill_stream_properties_from_drm_display_mode(
+ 		}
+ 	}
+ 
++#ifdef CONFIG_X86_PS5
++	dm_ps5_set_hdr_timing(timing_out, mode_in, connector_state);
++#endif
++
  	stream->output_color_space = get_output_color_space(timing_out, connector_state);
  	stream->content_type = get_output_content_type(connector_state);
 +
@@ -1849,7 +1891,7 @@ index 941c1a3..d2ed38c 100644
  }
  
  static void fill_audio_info(struct audio_info *audio_info,
-@@ -8542,6 +8580,11 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
+@@ -8542,6 +8613,11 @@ enum drm_mode_status amdgpu_dm_connector_mode_valid(struct drm_connector *connec
  	 */
  	struct amdgpu_dm_connector *aconnector = to_amdgpu_dm_connector(connector);
  
@@ -1861,7 +1903,34 @@ index 941c1a3..d2ed38c 100644
  	if ((mode->flags & DRM_MODE_FLAG_INTERLACE) ||
  			(mode->flags & DRM_MODE_FLAG_DBLSCAN))
  		return result;
-@@ -11462,6 +11505,28 @@ static int amdgpu_dm_atomic_setup_commit(struct drm_atomic_commit *state)
+@@ -8641,6 +8717,26 @@ static int fill_hdr_info_packet(const struct drm_connector_state *state,
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_X86_PS5
++static void dm_ps5_set_hdr_config(const struct drm_connector_state *state)
++{
++	struct hdmi_drm_infoframe frame;
++	bool bt2020;
++
++	if (!state)
++		return;
++
++	bt2020 = state->colorspace == DRM_MODE_COLORIMETRY_BT2020_RGB ||
++		 state->colorspace == DRM_MODE_COLORIMETRY_BT2020_YCC;
++
++	if (state->hdr_output_metadata &&
++	    !drm_hdmi_infoframe_set_hdr_metadata(&frame, state))
++		sceHdmiSetHdrConfig(&frame, bt2020);
++	else
++		sceHdmiSetHdrConfig(NULL, bt2020);
++}
++#endif
++
+ static int
+ amdgpu_dm_connector_atomic_check(struct drm_connector *conn,
+ 				 struct drm_atomic_commit *state)
+@@ -11462,6 +11558,30 @@ static int amdgpu_dm_atomic_setup_commit(struct drm_atomic_commit *state)
  	return 0;
  }
  
@@ -1880,7 +1949,9 @@ index 941c1a3..d2ed38c 100644
 +	if (channels == 0)
 +		channels = 2;
 +
-+	sceHdmiSetVideoConfig(mode);
++	sceHdmiSetVideoConfig(mode,
++			      convert_dc_color_depth_into_bpc(stream->timing.display_color_depth),
++			      stream->timing.pixel_encoding == PIXEL_ENCODING_YCBCR422);
 +	sceHdmiDeviceSetVideoMute(0);
 +	sceHdmiSetAudioConfig(channels);
 +	sceHdmiSetAudioMute(0);
@@ -1890,7 +1961,7 @@ index 941c1a3..d2ed38c 100644
  /**
   * amdgpu_dm_atomic_commit_tail() - AMDgpu DM's commit tail implementation.
   * @state: The atomic state to commit
-@@ -11492,12 +11557,55 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+@@ -11492,12 +11612,62 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
  	drm_atomic_helper_update_legacy_modeset_state(dev, state);
  	drm_dp_mst_atomic_wait_for_dependencies(state);
  
@@ -1933,6 +2004,13 @@ index 941c1a3..d2ed38c 100644
 +			if (dm_new_crtc_state->stream && dc_is_dp_signal(dm_new_crtc_state->stream->signal)) {
 +				dm_ps5_hdmi_enable(dm_new_crtc_state->stream, &new_crtc_state->mode);
 +
++				/* HDMI setup clears HDR, set it again. */
++				connector = amdgpu_dm_find_first_crtc_matching_connector(state, crtc);
++				if (connector) {
++					new_con_state = drm_atomic_get_new_connector_state(state, connector);
++					dm_ps5_set_hdr_config(new_con_state);
++				}
++
 +				/* No audio after a hotplug until it's set up again. */
 +				if (time_before(jiffies, dm->ps5_hdmi_resetup_until) &&
 +				    !dm->ps5_hdmi_resetup)
@@ -1946,7 +2024,17 @@ index 941c1a3..d2ed38c 100644
  	amdgpu_dm_update_hdcp(state);
  
  	/* Handle connector state changes */
-@@ -11871,6 +11979,62 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
+@@ -11567,6 +11737,9 @@ static void amdgpu_dm_atomic_commit_tail(struct drm_atomic_commit *state)
+ 		if (hdr_changed) {
+ 			fill_hdr_info_packet(new_con_state, &hdr_packet);
+ 			stream_update.hdr_static_metadata = &hdr_packet;
++#ifdef CONFIG_X86_PS5
++			dm_ps5_set_hdr_config(new_con_state);
++#endif
+ 		}
+ 
+ 		status = dc_stream_get_status(dm_new_crtc_state->stream);
+@@ -11871,6 +12044,62 @@ void dm_restore_drm_connector_state(struct drm_device *dev,
  		dm_force_atomic_commit(&aconnector->base);
  }
  
@@ -6394,15 +6482,16 @@ index 000000000000..c6c64e3cc9ed
 +MODULE_DESCRIPTION("PS5 fan driver");
 +MODULE_ALIAS("platform:ps5-fan");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
-new file mode 100644
-index 0000000..a4ace5c
+new file mode 100755
+index 0000000..cc36996
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1269 @@
+@@ -0,0 +1,1330 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 +
++#include <linux/hdmi.h>
 +#include <linux/module.h>
 +#include <linux/mutex.h>
 +#include <linux/ps5.h>
@@ -6509,6 +6598,8 @@ index 0000000..a4ace5c
 +static u8 tmds_ch_swap;
 +static u8 dp_polarity;
 +static u8 dp_ch_swap;
++static bool hdr_enabled;
++static bool bt2020_enabled;
 +
 +static void i2c_init(u8 code)
 +{
@@ -7161,7 +7252,8 @@ index 0000000..a4ace5c
 +	i2c_exec();
 +}
 +
-+static void setHdmiBasicVideoConfigFlava3(const struct drm_display_mode *mode)
++static void setHdmiBasicVideoConfigFlava3(const struct drm_display_mode *mode,
++					  unsigned int bpc, bool yuv422)
 +{
 +	u8 vic = drm_match_cea_mode(mode);
 +	int hz = drm_mode_vrefresh(mode);
@@ -7195,10 +7287,16 @@ index 0000000..a4ace5c
 +	i2c_write(0x70c0, 0xdc);
 +	i2c_write(0x621b, 0x00);
 +	i2c_write(0x629a, 0x00);
-+	i2c_write_data(0x70c4, (u8[]){0x08, 0x08}, 2);
++	/* Set color format */
++	if (yuv422) {
++		i2c_write_data(0x70c4, (u8[]){0x04, 0x04}, 2);
++	} else {
++		i2c_write_data(0x70c4, (u8[]){0x08, 0x08}, 2);
++	}
 +	i2c_write(0x70c2, 0x00);
 +	i2c_write(0x70fe, 0x02);
-+	i2c_write(0x70c3, 0x00);
++	/* Set color depth */
++	i2c_write(0x70c3, yuv422 && bpc == 12 ? 0x02 : 0x00);
 +	i2c_write(0x7018, (tmds_polarity == 1) << 1);
 +	if (tmds_ch_swap == 1) {
 +		i2c_end_block();
@@ -7275,15 +7373,52 @@ index 0000000..a4ace5c
 +	i2c_exec();
 +}
 +
-+static void setHdmiVideoConfigFlava3(const struct drm_display_mode *mode)
++static void setHdmiVideoConfigFlava3(const struct drm_display_mode *mode,
++				     unsigned int bpc, bool yuv422)
 +{
 +	configParamFlava3Pre();
 +	configLinkTrainingFlava3();
-+	setHdmiBasicVideoConfigFlava3(mode);
++	setHdmiBasicVideoConfigFlava3(mode, bpc, yuv422);
 +	initHdmiPhyForFlava3_1st();
 +	initHdmiPhyForFlava3_2nd();
 +	mask_7203();
 +	setVideoAdditionalConfigFlava3(mode);
++}
++
++static void setHdrConfigFlava3(const struct hdmi_drm_infoframe *frame, bool bt2020)
++{
++	struct hdmi_drm_infoframe sdr;
++	u8 data[HDMI_INFOFRAME_SIZE(DRM)];
++	bool hdr = frame != NULL;
++
++	/* Sinks keep the last InfoFrame, send EOTF 0 when leaving HDR. */
++	if (!frame && hdr_enabled) {
++		hdmi_drm_infoframe_init(&sdr);
++		frame = &sdr;
++	}
++	if (!frame && bt2020 == bt2020_enabled)
++		return;
++	if (frame && hdmi_drm_infoframe_pack_only(frame, data, sizeof(data)) != sizeof(data))
++		return;
++
++	i2c_init(1);
++	if (frame) {
++		/* Send DRM InfoFrame */
++		i2c_write_data(0x7e40, data, sizeof(data));
++		i2c_mask(0x7203, 0x01, 0x01);
++		i2c_write(0x7204, 0x01);
++		i2c_waitclear(0x7204, 0x01);
++	}
++	if (bt2020 || bt2020_enabled) {
++		/* Set colorimetry */
++		i2c_mask(0x7225, bt2020 ? 0xc0 : 0x00, 0xc0);
++		i2c_mask(0x7226, bt2020 ? 0x60 : 0x00, 0x70);
++		i2c_write(0x7204, 0x40);
++		i2c_waitclear(0x7204, 0x40);
++	}
++	i2c_exec();
++	hdr_enabled = hdr;
++	bt2020_enabled = bt2020;
 +}
 +
 +static void setHdmiAudioConfigBasic(int channels)
@@ -7508,15 +7643,23 @@ index 0000000..a4ace5c
 +}
 +EXPORT_SYMBOL(sceHdmiInitVideoConfig);
 +
-+void sceHdmiSetVideoConfig(const struct drm_display_mode *mode)
++void sceHdmiSetVideoConfig(const struct drm_display_mode *mode, unsigned int bpc, bool yuv422)
 +{
 +	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
-+		setHdmiVideoConfigFlava3(mode);
++		setHdmiVideoConfigFlava3(mode, bpc, yuv422);
 +	} else {
 +		setHdmiVideoConfigVerde(mode);
 +	}
 +}
 +EXPORT_SYMBOL(sceHdmiSetVideoConfig);
++
++void sceHdmiSetHdrConfig(const struct hdmi_drm_infoframe *frame, bool bt2020)
++{
++	if (hdmi_ic_type == HDMI_IC_TYPE_FLAVA3) {
++		setHdrConfigFlava3(frame, bt2020);
++	}
++}
++EXPORT_SYMBOL(sceHdmiSetHdrConfig);
 +
 +void sceHdmiDeviceSetVideoMute(int mute)
 +{
@@ -7625,6 +7768,12 @@ index 0000000..a4ace5c
 +	return false;
 +}
 +EXPORT_SYMBOL(isHdmiModeValid);
++
++bool isHdmiHdrSupported(void)
++{
++	return hdmi_ic_type == HDMI_IC_TYPE_FLAVA3;
++}
++EXPORT_SYMBOL(isHdmiHdrSupported);
 +
 +const struct drm_edid *real_edid = NULL;
 +
@@ -10994,11 +11143,11 @@ index fbb62f7c3111..18edd8279773 100644
  	const struct dmi_device *from);
  extern void dmi_setup(void);
 diff --git a/include/linux/ps5.h b/include/linux/ps5.h
-new file mode 100644
-index 0000000..5f27f6e
+new file mode 100755
+index 0000000..54e68fd
 --- /dev/null
 +++ b/include/linux/ps5.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,103 @@
 +/* SPDX-License-Identifier: GPL-2.0-only */
 +
 +#ifndef _LINUX_PS5_H
@@ -11006,6 +11155,8 @@ index 0000000..5f27f6e
 +
 +#include <linux/types.h>
 +#include <drm/drm_modes.h>
++
++struct hdmi_drm_infoframe;
 +
 +#define ICC_MSG_MIN_SIZE	0x20
 +#define ICC_MSG_MAX_SIZE 	0x7f0
@@ -11055,7 +11206,8 @@ index 0000000..5f27f6e
 +
 +void hdmiSystemResume(void);
 +void sceHdmiInitVideoConfig(void);
-+void sceHdmiSetVideoConfig(const struct drm_display_mode *mode);
++void sceHdmiSetVideoConfig(const struct drm_display_mode *mode, unsigned int bpc, bool yuv422);
++void sceHdmiSetHdrConfig(const struct hdmi_drm_infoframe *frame, bool bt2020);
 +void sceHdmiSetAudioConfig(int channels);
 +void sceHdmiDeviceSetVideoMute(int mute);
 +void sceHdmiSetAudioMute(int mute);
@@ -11063,6 +11215,7 @@ index 0000000..5f27f6e
 +int getHdmiConfiguration(void);
 +u32 getHdmiDpAudioN(u32 default_n);
 +bool isHdmiModeValid(const struct drm_display_mode *mode, int force_1080p);
++bool isHdmiHdrSupported(void);
 +
 +int icc_nvs_write(u32 partition, u16 offset, u16 length, const void *data);
 +int icc_nvs_read(u32 partition, u16 offset, u16 length, void *data);
