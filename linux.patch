@@ -6483,10 +6483,10 @@ index 000000000000..c6c64e3cc9ed
 +MODULE_ALIAS("platform:ps5-fan");
 diff --git a/drivers/ps5/hdmi.c b/drivers/ps5/hdmi.c
 new file mode 100755
-index 0000000..cc36996
+index 0000000..a5b526f
 --- /dev/null
 +++ b/drivers/ps5/hdmi.c
-@@ -0,0 +1,1330 @@
+@@ -0,0 +1,1332 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +
 +#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -6598,6 +6598,7 @@ index 0000000..cc36996
 +static u8 tmds_ch_swap;
 +static u8 dp_polarity;
 +static u8 dp_ch_swap;
++static bool scrambling;
 +static bool hdr_enabled;
 +static bool bt2020_enabled;
 +
@@ -7354,14 +7355,15 @@ index 0000000..cc36996
 +	i2c_waitclear(0x7a84, 0x01);
 +	i2c_begin_block();
 +	i2c_write(0x7a8b, 0x05);
-+	if (vic == 97) {
-+		i2c_write(0x7c00, 0x03);
++	if (vic == 97 || scrambling) {
++		i2c_write(0x7c00, vic == 97 ? 0x03 : 0x00);
 +		i2c_write_data(0x7a80, (u8[]){0xa8, 0x20, 0x00, 0x80}, 4);
 +	}
 +	i2c_end_block();
-+	if (vic == 97) {
++	if (vic == 97 || scrambling) {
 +		i2c_waitclear(0x7a84, 0x01);
 +	}
++	scrambling = vic == 97;
 +	i2c_begin_block();
 +	i2c_write(0x7021, 0xff);
 +	i2c_write(0x700a, 0x02);
