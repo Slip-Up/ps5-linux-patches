@@ -14225,10 +14225,10 @@ index 000000000000..7e933c30fc3e
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/ps5/usbc_dp.c b/drivers/ps5/usbc_dp.c
 new file mode 100644
-index 000000000000..d98d48ea12d9
+index 000000000000..ab5c7c0ef469
 --- /dev/null
 +++ b/drivers/ps5/usbc_dp.c
-@@ -0,0 +1,302 @@
+@@ -0,0 +1,303 @@
 +// SPDX-License-Identifier: GPL-2.0-only
 +/* PS5 USB-C DisplayPort policy. The port controller owns PD negotiation and the mux. */
 +
@@ -14253,11 +14253,12 @@ index 000000000000..d98d48ea12d9
 +/* Prepare the FAT port before attachment can negotiate DP and assert HPD.
 + * AMDGPU calls this policy only after selecting a unique USB-C/HDMI route;
 + * real HPD and DRM detection/modesetting still control the video stream.
-+ * enable=0 keeps the port controller policy untouched for diagnostics.
++ * Off by default: reprogramming the controller re-attaches the port, which
++ * resets any USB device on it, such as a boot drive. enable=1 opts in.
 + */
-+static bool enable = true;
++static bool enable;
 +module_param(enable, bool, 0444);
-+MODULE_PARM_DESC(enable, "Prepare FAT USB-C DP policy automatically: Sony/Genesys RAM allowlist and NORMAL mode (default: on; 0 leaves policy unchanged)");
++MODULE_PARM_DESC(enable, "Prepare FAT USB-C DP policy: Sony/Genesys RAM allowlist and NORMAL mode (default: off; enabling it resets any USB device on the port)");
 +
 +static unsigned int dp_lanes = 4;
 +module_param(dp_lanes, uint, 0444);
